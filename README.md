@@ -5,6 +5,8 @@ Experimental WEBRTC to SIP (Lab)
 it's working with some issues
 
 - [X] REGISTER
+- [X] INVITE SIP -> WEBRTC
+- [ ] INVITE WEBRTC -> SIP
 - [X] AUDIO SIP -> WEBRTC
 - [X] AUDIO WEBRTC -> SIP
 - [ ] AUDIO WEBRTC -> SIP HIGH QUALITY
