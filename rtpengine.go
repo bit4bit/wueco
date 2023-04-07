@@ -113,11 +113,12 @@ func (c *rtpEngine) Read(out io.Writer) {
 		buf := make([]byte, 1024)
 		_, _, err := c.server.ReadFrom(buf)
 		if err != nil {
-			continue
+			log.Printf("RTPENGINE READING ERROR: %s\n", err)
+			return
 		}
 		if _, err := out.Write(buf); err != nil {
 			log.Printf("RTPENGINE WRITING ERROR: %s\n", err)
-			break
+			return
 		}
 	}
 }
