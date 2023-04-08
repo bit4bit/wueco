@@ -35,7 +35,6 @@ func main() {
 
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("New websocket connection")
-
 	contactWSToSIP := make(map[string]string)
 	contactSIPToWS := make(map[string]string)
 
@@ -89,23 +88,17 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
-	
-	rtpSender, err := peerConn.AddTrack(audioTrack)
-	if err != nil {
-		panic(err)
-	}
 	ctxRTCP, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go rtpengine.WriteRTCP(ctxRTCP, rtpSender)
-	go rtpengine.ReadRTCP(ctxRTCP, peerConn)
-	
+	proxyRTCP(ctxRTCP, rtpengine, peerConn, audioTrack)
 
-	peerConn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	peerConn.OnTrack(func(track *webrtc.TrackRemote, r *webrtc.RTPReceiver) {
 		log.Println("OnTrack")
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		go rtpengine.WriteRTCP(ctx, r)
 		go rtpengine.Read(ctx, audioTrack)
 		rtpengine.Write(ctx, track)
 	})
@@ -205,6 +198,20 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 
 		sipConn.W.Flush()
 	}
+}
+
+
+func proxyRTCP(ctx context.Context, rtpengine *rtpproxy.RTPProxy, pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP) {
+	if track == nil {
+		panic("expected track")
+		return
+	}
+	_, err := pc.AddTrack(track)
+	if err != nil {
+		panic(err)
+	}
+
+	go rtpengine.ReadRTCP(ctx, pc)
 }
 
 func itoa(s int) string {

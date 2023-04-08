@@ -162,12 +162,11 @@ func (c *RTPProxy) Write(ctx context.Context, in *webrtc.TrackRemote) {
 	}
 }
 
-func (c *RTPProxy) WriteRTCP(ctx context.Context, in *webrtc.RTPSender) {
+func (c *RTPProxy) WriteRTCP(ctx context.Context, in *webrtc.RTPReceiver) {
 	rtcpBuf := make([]byte, 1600)
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("DONE WRITERTCP")
 			return
 		default:
 			n, _, rtcpErr := in.Read(rtcpBuf);
@@ -191,7 +190,6 @@ func (c *RTPProxy) ReadRTCP(ctx context.Context, out *webrtc.PeerConnection) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("DONE ReadRTCP")
 			return
 		default:
 			n, _, err := c.serverRTCP.ReadFrom(rtcpBuf)
