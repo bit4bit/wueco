@@ -10,24 +10,45 @@ import (
 	"strconv"
 
 	"github.com/pion/rtp"
+	"github.com/pion/rtcp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 )
 
 type RTPProxy struct {
 	server  net.PacketConn
+	serverRTCP net.PacketConn
 	sipAddr net.Addr
+	sipRTCPAddr net.Addr
 	port    int
 	host    string
 }
 
 func NewRTPProxy(host string) (*RTPProxy, error) {
-	srv, err := net.ListenPacket("udp", fmt.Sprintf("%s:0", host))
+	rtpPort, err := getFreePort()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: fails to get a free port", err);
 	}
 
-	return &RTPProxy{server: srv, sipAddr: nil, host: host}, nil
+	srv, err := net.ListenPacket("udp", fmt.Sprintf("%s:%d", host, rtpPort))
+	if err != nil {
+		return nil, fmt.Errorf("%w: fails to listen for RTP", err)
+	}
+
+	rtcpPort := rtpPort + 1
+	srvRTCP, err := net.ListenPacket("udp", fmt.Sprintf("%s:%d", host, rtcpPort))
+	if err != nil {
+		return nil, fmt.Errorf("%w: fails to listen for RTCP")
+	}
+		
+
+	return &RTPProxy{
+		server: srv,
+		serverRTCP: srvRTCP,
+		sipAddr: nil,
+		sipRTCPAddr: nil,
+		host: host,
+	}, nil
 }
 
 func (c *RTPProxy) Addr() string {
@@ -56,7 +77,16 @@ func (c *RTPProxy) SetSIPSDP(sdpBody string) {
 	if err != nil {
 		panic(err)
 	}
+
+	addressRTCP := fmt.Sprintf("%s:%d",
+		parsed.ConnectionInformation.Address.Address,
+		parsed.MediaDescriptions[0].MediaName.Port.Value + 1)
+	addrRTCP, err := net.ResolveUDPAddr("udp", addressRTCP)
+	if err != nil {
+		panic(err)
+	}
 	c.sipAddr = addr
+	c.sipRTCPAddr = addrRTCP
 }
 
 func (c *RTPProxy) LocalSDP(sdpBody string) string {
@@ -105,6 +135,7 @@ func (c *RTPProxy) Write(ctx context.Context, in *webrtc.TrackRemote) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
 		default:
 			n, _, err := in.Read(rtpBuf)
 			if err != nil {
@@ -131,6 +162,54 @@ func (c *RTPProxy) Write(ctx context.Context, in *webrtc.TrackRemote) {
 	}
 }
 
+func (c *RTPProxy) WriteRTCP(ctx context.Context, in *webrtc.RTPSender) {
+	rtcpBuf := make([]byte, 1600)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("DONE WRITERTCP")
+			return
+		default:
+			n, _, rtcpErr := in.Read(rtcpBuf);
+			if rtcpErr != nil {
+				if errors.Is(rtcpErr, io.EOF) {
+					return
+				}
+				panic(rtcpErr)
+			}
+			if c.sipRTCPAddr != nil {
+				if _, err := c.serverRTCP.WriteTo(rtcpBuf[:n], c.sipRTCPAddr); err != nil {
+					panic(err)
+				}
+			}
+		}
+	}
+}
+
+func (c *RTPProxy) ReadRTCP(ctx context.Context, out *webrtc.PeerConnection) {
+	rtcpBuf := make([]byte, 1600)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("DONE ReadRTCP")
+			return
+		default:
+			n, _, err := c.serverRTCP.ReadFrom(rtcpBuf)
+			if err != nil {
+				return
+			}
+			pkts, err := rtcp.Unmarshal(rtcpBuf[:n])
+			if err != nil {
+				panic(err)
+			}
+
+			if err = out.WriteRTCP(pkts); err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
 func (c *RTPProxy) Read(ctx context.Context, out io.Writer) {
 	log.Printf("RTPPROXY FROM SIP\n")
 
@@ -139,7 +218,7 @@ func (c *RTPProxy) Read(ctx context.Context, out io.Writer) {
 	for {
 		select {
 		case <-ctx.Done():
-			break
+			return
 		default:
 			n, _, err := c.server.ReadFrom(rtpBuf)
 			if err != nil {

@@ -12,11 +12,9 @@ import (
 	"net/textproto"
 	"strconv"
 	"strings"
-	"time"
 
 	"bit4bit.in/wueco/rtpproxy"
 	"github.com/gorilla/websocket"
-	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
 )
 
@@ -91,40 +89,25 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		panic(err)
 	}
-
+	
 	rtpSender, err := peerConn.AddTrack(audioTrack)
 	if err != nil {
 		panic(err)
 	}
-	go func() {
-		rtcpBuf := make([]byte, 1500)
-		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-				return
-			}
-		}
-	}()
+	ctxRTCP, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go rtpengine.WriteRTCP(ctxRTCP, rtpSender)
+	go rtpengine.ReadRTCP(ctxRTCP, peerConn)
+	
 
 	peerConn.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		log.Println("OnTrack")
 
-		// Send a PLI on an interval so that the publisher is pushing a keyframe every rtcpPLIInterval
-		go func() {
-			ticker := time.NewTicker(time.Second * 2)
-			for range ticker.C {
-				if rtcpErr := peerConn.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); rtcpErr != nil {
-					return
-				}
-			}
-		}()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-		ctxWrite, cancelWrite := context.WithCancel(context.Background())
-		defer cancelWrite()
-		ctxRead, cancelRead := context.WithCancel(ctxWrite)
-		defer cancelRead()
-
-		go rtpengine.Write(ctxWrite, track)
-		rtpengine.Read(ctxRead, audioTrack)
+		go rtpengine.Read(ctx, audioTrack)
+		rtpengine.Write(ctx, track)
 	})
 
 	if _, err = peerConn.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
@@ -189,6 +172,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		sipMsg, err := newSIPMessage(bufio.NewReader(msgBuf))
 		if err != nil {
 			log.Printf("[ERR] newSipMessage: %s\n", err)
+			return
 		}
 		content := sipMsg.content
 
