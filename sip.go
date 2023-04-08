@@ -1,23 +1,23 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
 	"log"
 	"net/textproto"
-	"bufio"
-	"strconv"
-	"fmt"
-	"bytes"
-	"io"
-	"strings"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
 
 type sipMessage struct {
 	statusLine string
-	header textproto.MIMEHeader
-	content []byte
+	header     textproto.MIMEHeader
+	content    []byte
 }
 
 func (c sipMessage) To() string {
@@ -70,7 +70,7 @@ func (c sipMessage) WriteMessage(conn *websocket.Conn) error {
 	return conn.WriteMessage(websocket.TextMessage, raw)
 }
 
-func (c sipMessage) Write(out io.Writer) (int, error)  {
+func (c sipMessage) Write(out io.Writer) (int, error) {
 	raw := c.marshal()
 	log.Printf("WEBRTC -> SIP: %s\n", string(raw))
 	return out.Write(raw)
@@ -90,7 +90,7 @@ func newSIPMessage(io *bufio.Reader) (*sipMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	content := make([]byte, content_length)
 	_, err = reader.R.Read(content)
 	if err != nil {
@@ -99,7 +99,7 @@ func newSIPMessage(io *bufio.Reader) (*sipMessage, error) {
 
 	return &sipMessage{
 		statusLine: statusLine,
-		header: header,
-		content: content,
+		header:     header,
+		content:    content,
 	}, nil
 }

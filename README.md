@@ -15,3 +15,9 @@ it's working with some issues
 ~~~
 $ go run -host <ip listening> -sip <freeswitch ip>
 ~~~
+
+
+# Resources
+
+- https://github.com/pion/webrtc/blob/master/examples/rtp-forwarder/main.go
+- https://github.com/pion/example-webrtc-applications
