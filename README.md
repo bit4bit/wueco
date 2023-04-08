@@ -2,7 +2,7 @@
 
 Experimental WEBRTC to SIP (Lab) 
 
-it's working with some issues
+it's working with some issues and only supports OPUS
 
 - [X] REGISTER
 - [X] INVITE SIP -> WEBRTC
@@ -10,7 +10,9 @@ it's working with some issues
 - [X] AUDIO SIP -> WEBRTC
 - [X] AUDIO WEBRTC -> SIP
 - [ ] AUDIO WEBRTC -> SIP HIGH QUALITY
-- [ ] SUPPORT CODEC G711
+- [ ] SUPPORT CODEC PCMU
+- [ ] SUPPORT CODEC PCMA
+- [ ] SUPPORT CODEC G722
 
 ~~~
 $ go run -host <ip listening> -sip <freeswitch ip>
