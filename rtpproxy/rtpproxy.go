@@ -93,8 +93,12 @@ func (c *RTPProxy) LocalSDP(sdpBody string) string {
 	//https://pkg.go.dev/github.com/pion/sdp/v3#SessionDescription
 	parsed := &sdp.SessionDescription{}
 	if err := parsed.Unmarshal([]byte(sdpBody)); err != nil {
-		log.Fatal(err)
+		if !errors.Is(err, io.EOF) {
+			log.Fatalf("LocalSDP unmarshal: %s: [%s] %s", err, sdpBody, parsed)
+		}
 	}
+	parsed.Origin.Username = "wueco"
+	parsed.Origin.UnicastAddress = c.host
 
 	// TODO apuntamos a ip del servidor
 	parsed.MediaDescriptions[0].ConnectionInformation.Address.Address = c.host
@@ -108,16 +112,18 @@ func (c *RTPProxy) LocalSDP(sdpBody string) string {
 			"rtpmap": true,
 			"fmtp":   true,
 			"ptime":  true,
+			"sendrcv": true,
 		}
 		if _, ok := valids[remoteAttribute.Key]; ok {
 			attributes = append(attributes, remoteAttribute)
 		}
 	}
 	parsed.MediaDescriptions[0].Attributes = attributes
-
+	// TODO: asumimos que la primera media es el audio
+	parsed.MediaDescriptions = []*sdp.MediaDescription{parsed.MediaDescriptions[0]}
 	out, err := parsed.Marshal()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("LocalSDP Marshal: %s", err)
 	}
 
 	return string(out)

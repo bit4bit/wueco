@@ -43,7 +43,10 @@ Content-Length: 0
 `
 	wsconn := newWSFakeConn()
 	wsconn.WriteString(pdu)
-	reader := NewReader(bufio.NewReader(NewReaderWS(wsconn)))
+
+	wsReader := NewReaderWS(wsconn)
+	go wsReader.Run()
+	reader := NewReader(bufio.NewReader(wsReader))
 
 	msg, err := reader.ReadMessage()
 	if err != nil {
@@ -77,8 +80,9 @@ Content-Length: 0
 			wsconn.WriteString(part)
 		}
 	}()
-
-	reader := NewReader(bufio.NewReader(NewReaderWS(wsconn)))
+	wsReader := NewReaderWS(wsconn)
+	go wsReader.Run()
+	reader := NewReader(bufio.NewReader(wsReader))
 
 	msg, err := reader.ReadMessage()
 	if err != nil {

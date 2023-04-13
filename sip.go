@@ -1,23 +1,27 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net/textproto"
 	"regexp"
-	"strconv"
 	"strings"
+	"errors"
 
+	"bit4bit.in/wueco/sipproto"
 	"github.com/gorilla/websocket"
+)
+
+var (
+	errNeedMoreData = errors.New("sip: need more data")
 )
 
 type sipMessage struct {
 	statusLine string
 	header     textproto.MIMEHeader
-	content    []byte
+	content    string
 }
 
 func (c sipMessage) To() string {
@@ -44,20 +48,39 @@ func (c sipMessage) extractAddr(field string) string {
 	return strings.Trim(reAddr.FindString(c.header.Get(field)), "<>")
 }
 
+func (c sipMessage) IsStatus(status string) bool {
+	return strings.Contains(c.statusLine, status)
+}
+
 func (c sipMessage) IsMethod(method string) bool {
 	return strings.Contains(c.statusLine, method)
 }
 
 func (c sipMessage) marshal() []byte {
+	// se prueba usando como referencia
+	// SetContent(content string)
+	// strings.TrimSpace
+	// bytes.Buffer
+	// strings.Builder
+	// bug go real length != len(content)
+	var fixContent strings.Builder
+	for _, b := range []byte(c.content) {
+		if b != 0 {
+			fixContent.Write([]byte{b})
+		}
+	}
+	content := fixContent.String()
+
+
 	rspBuf := new(bytes.Buffer)
 	rspBuf.WriteString(c.statusLine)
 	rspBuf.WriteString("\r\n")
-	c.header.Set("content-length", itoa(len(c.content)))
-	for key, values := range c.header {
-		fmt.Fprintf(rspBuf, "%s: %s\r\n", key, values[0])
+	c.header.Set("content-length", fmt.Sprintf("%d", len(content)))
+	for key, _ := range c.header {
+		fmt.Fprintf(rspBuf, "%s: %s\r\n", key, c.header.Get(key))
 	}
 	rspBuf.WriteString("\r\n")
-	rspBuf.Write(c.content)
+	rspBuf.WriteString(content)
 
 	rawSIP := bytes.Replace(rspBuf.Bytes(), []byte("SIP/2.0/TCP"), []byte("SIP/2.0/WS"), 1)
 	rawSIP = bytes.Replace(rawSIP, []byte("SIP/2.0/WS"), []byte("SIP/2.0/TCP"), 1)
@@ -76,30 +99,15 @@ func (c sipMessage) Write(out io.Writer) (int, error) {
 	return out.Write(raw)
 }
 
-func newSIPMessage(io *bufio.Reader) (*sipMessage, error) {
-	reader := textproto.NewReader(io)
-	statusLine, err := reader.ReadLine()
-	if err != nil {
-		return nil, err
-	}
-	header, err := reader.ReadMIMEHeader()
-	if err != nil {
-		return nil, err
-	}
-	content_length, err := strconv.Atoi(header.Get("Content-Length"))
-	if err != nil {
-		return nil, err
-	}
+func newSIPMessage(msg *sipproto.Message) (*sipMessage, error) {
+	header := textproto.MIMEHeader{}
 
-	content := make([]byte, content_length)
-	_, err = reader.R.Read(content)
-	if err != nil {
-		return nil, err
+	for key, val := range msg.Header {
+		header.Set(key, val)
 	}
-
 	return &sipMessage{
-		statusLine: statusLine,
+		statusLine: msg.StatusLine,
 		header:     header,
-		content:    content,
+		content:    msg.Content,
 	}, nil
 }

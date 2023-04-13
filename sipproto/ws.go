@@ -1,49 +1,45 @@
 package sipproto
 
 import (
-	"bytes"
 	"io"
-	"fmt"
 	"time"
 	"errors"
 )
-
-var errTimeoutWSMessage = errors.New("timeout reading websocket message")
 
 type WSReadMessage interface {
 	ReadMessage() (messageType int, p []byte, err error)
 }
 
 type wsRead struct {
-	r WSReadMessage
-	buf bytes.Buffer
+	wsR WSReadMessage
+	r io.Reader
+	w io.WriteCloser
 	retries int
 	retry_timeout time.Duration
 }
 
-
-func (c *wsRead) Read(p []byte) (int, error) {
+func (c *wsRead) Run() {
 	for {
-		n, data, err := c.r.ReadMessage()
+		_, data, err := c.wsR.ReadMessage()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if (c.retries < 1) {
-					return 0, errTimeoutWSMessage
+					c.w.Close()
+					panic("timeout reading websocket message")
 				}
 				c.retries -= 1
 				time.Sleep(c.retry_timeout)
 				continue
 			}
-			return n, fmt.Errorf("ReadMessage: %w", err)
+			c.w.Close()
+			return
 		}
-		nWrite, err := c.buf.Write(data)
-		if err != nil {
-			return nWrite, fmt.Errorf("buffer.Write: %w", err)
-		}
-		break
+		c.w.Write(data)
 	}
+}
 
-	return c.buf.Read(p)
+func (c *wsRead) Read(p []byte) (int, error) {
+	return c.r.Read(p)
 }
 
 type ReaderWSOption func(*wsRead)
@@ -60,15 +56,19 @@ func WithRetryTimeout(val time.Duration) ReaderWSOption {
 	}
 }
 
-func NewReaderWS(reader WSReadMessage, opts ...ReaderWSOption) io.Reader {
-	r := &wsRead{
-		r: reader,
+func NewReaderWS(reader WSReadMessage, opts ...ReaderWSOption) *wsRead {
+	r, w := io.Pipe()
+	
+	wsR := &wsRead{
+		wsR: reader,
+		r: r,
+		w: w,
 		retries: 15,
 		retry_timeout: 10 * time.Millisecond,
 	}
 	for _, opt := range opts {
-		opt(r)
+		opt(wsR)
 	}
 
-	return r
+	return wsR
 }

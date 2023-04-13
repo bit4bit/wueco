@@ -1,19 +1,19 @@
 package main
 
 import (
+	"io"
 	"bufio"
-	"bytes"
+	"errors"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/textproto"
 	"strconv"
-	"strings"
 
 	"bit4bit.in/wueco/rtpproxy"
+	"bit4bit.in/wueco/sipproto"
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v3"
 )
@@ -65,7 +65,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	peerConn, err := webrtc.NewPeerConnection(config)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 		return
 	}
 
@@ -106,100 +106,150 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err = peerConn.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
 		log.Fatal(err)
 	}
-	offer, err := peerConn.CreateOffer(nil)
-	if err != nil {
-		panic(err)
-	}
 
-	if err := peerConn.SetLocalDescription(offer); err != nil {
-		panic(err)
-	}
+	offer := &webrtc.SessionDescription{}
 
 	sipConnRaw, err := net.Dial("tcp", *sipAddress)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	sipConn := textproto.NewConn(sipConnRaw)
-	defer sipConn.Close()
+	defer sipConnRaw.Close()
+
+
+	sipReader := sipproto.NewReader(bufio.NewReader(sipConnRaw))
+
 
 	// SIP -> WS
 	go func() {
 		for {
-			sipMsg, err := newSIPMessage(sipConn.R)
+			protoMsg, err := sipReader.ReadMessage()
 			if err != nil {
-				fmt.Printf("[ERR] newSIPMessage: %s\n", err)
+				if errors.Is(err, io.EOF) {
+					continue
+				}
+				fmt.Printf("[ERR] SIP -> WS newSIPMessage: %s\n", err)
 				return
 			}
-
+			sipMsg, _ := newSIPMessage(protoMsg)
 			if wsContact, ok := contactSIPToWS[sipMsg.Contact()]; ok {
 				sipMsg.header.Set("contact", wsContact)
 			}
 
-			content := sipMsg.content
-			if strings.HasPrefix(sipMsg.statusLine, "INVITE") {
-				if sipMsg.header.Get("content-disposition") == "session" {
-					rtpengine.SetSIPSDP(string(sipMsg.content))
-
-					//ofrecemos al navegador el sdp de wueco
-					content = []byte(offer.SDP)
-				}
+			if err := proxyRTPSIPToWS(peerConn, sipMsg, rtpengine, offer); err != nil {
+				log.Printf("[ERR] proxyRTPSIPToWS: %s\n", err)
+				return
 			}
-			sipMsg.content = content
-			sipMsg.WriteMessage(conn)
 
+			sipMsg.WriteMessage(conn)
 		}
 	}()
 
-	// WS -> SIP
-	for {
-		// cada peticion sip se envia completamente en el message?
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		//log.Printf("ReadMessage: [%s]\n", string(raw))
-		msgBuf := new(bytes.Buffer)
-		msgBuf.Write(raw)
-		sipMsg, err := newSIPMessage(bufio.NewReader(msgBuf))
-		if err != nil {
-			log.Printf("[ERR] newSipMessage: %s\n", err)
-			return
-		}
-		content := sipMsg.content
 
+	
+	// WS -> SIP
+	wsR := sipproto.NewReaderWS(conn)
+	go wsR.Run()
+	wsReader := sipproto.NewReader(bufio.NewReader(wsR))
+	for {
+		protoMsg, err := wsReader.ReadMessage()
+		if err != nil {
+			if errors.Is(err, errNeedMoreData) {
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				continue
+			}
+			log.Printf("[ERR] WS - SIP newSipMessage: %s\n", err)
+			return
+		}
+		sipMsg, _ := newSIPMessage(protoMsg)
 		wsContact := sipMsg.header.Get("contact")
 		sipAddr, sipContact := sipMsg.ContactFromTo(wsContact, sipConnRaw.LocalAddr().String())
 		contactSIPToWS[sipAddr] = wsContact
 		contactWSToSIP[wsContact] = sipContact
-
+		
 		if sipContact, ok := contactWSToSIP[wsContact]; ok {
 			// enviamos el contact de wueco
 			sipMsg.header.Set("contact", sipContact)
 		}
-
-		if strings.HasPrefix(sipMsg.statusLine, "SIP/2.0 200 OK") && sipMsg.header.Get("content-type") == "application/sdp" {
-
-			if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: string(content)}); err != nil {
-				log.Printf("[ERR] setRemoteDescription: %s\n", err)
-				return
-			}
-			log.Println("[INFO] setRemoteDescription OK\n")
-			wuecoSDP := rtpengine.LocalSDP(string(content))
-			content = []byte(wuecoSDP)
+		
+		
+		if err := proxyRTPWSToSIP(peerConn, sipMsg, rtpengine, offer); err != nil {
+			log.Printf("[ERR] proxyRTPWSToSIP: %s", err)
+			return
 		}
-		sipMsg.content = content
-
-		if _, err := sipMsg.Write(sipConn.W); err != nil {
+		
+		if _, err := sipMsg.Write(sipConnRaw); err != nil {
 			log.Printf("[ERR] sipConn.Write: %w", err)
 			return
 		}
 
-		sipConn.W.Flush()
 	}
 }
 
+
+func proxyRTPWSToSIP(peerConn *webrtc.PeerConnection, sipMsg *sipMessage, rtpengine *rtpproxy.RTPProxy, offer *webrtc.SessionDescription) error {
+	content := string(sipMsg.content)
+	if sipMsg.IsMethod("INVITE") && sipMsg.header.Get("content-type") == "application/sdp" {
+		if sipMsg.header.Get("proxy-authorization") == "" {
+			if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: content}); err != nil {
+				panic(err)
+				return err
+			}
+			
+			loffer, err := peerConn.CreateAnswer(nil)
+			if err != nil {
+				panic(err)
+				return err
+			}
+			if err := peerConn.SetLocalDescription(loffer); err != nil {
+				panic(err)
+				return err
+			}
+			*offer = loffer
+		} else {
+			content = string(sipMsg.content)
+		}
+
+
+		sipMsg.content = rtpengine.LocalSDP(content)
+	} else if sipMsg.IsStatus("200") && sipMsg.header.Get("content-type") == "application/sdp" {
+		content := string(sipMsg.content)
+		
+		if err := peerConn.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: content}); err != nil {
+			return err
+		}
+		wuecoSDP := rtpengine.LocalSDP(content)
+		sipMsg.content =wuecoSDP
+	}
+
+	return nil
+}
+
+func proxyRTPSIPToWS(peerConn *webrtc.PeerConnection, sipMsg *sipMessage, rtpengine *rtpproxy.RTPProxy, offer *webrtc.SessionDescription) error {
+	if sipMsg.IsMethod("INVITE") && sipMsg.header.Get("content-disposition") == "session" {
+		loffer, err := peerConn.CreateOffer(nil)
+		if err != nil {
+			return err
+		}
+		if err := peerConn.SetLocalDescription(loffer); err != nil {
+			return err
+		}
+		*offer = loffer
+
+		rtpengine.SetSIPSDP(string(sipMsg.content))
+		
+		//ofrecemos al navegador el sdp de wueco
+		sipMsg.content = (*offer).SDP
+	} else if sipMsg.IsStatus("200") && sipMsg.header.Get("content-type") == "application/sdp" {
+		rtpengine.SetSIPSDP(string(sipMsg.content))
+		sipMsg.content = (*offer).SDP
+	}
+
+	return nil
+
+}
 
 func proxyRTCP(ctx context.Context, rtpengine *rtpproxy.RTPProxy, pc *webrtc.PeerConnection, track *webrtc.TrackLocalStaticRTP) {
 	if track == nil {
